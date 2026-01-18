@@ -1,0 +1,389 @@
+<# 
+IES Camp de Morvedre - Proyecto Aula Informatica (Windows)
+Script con menu: usuarios/grupos + gestor documental + permisos + seguridad + logs + limpieza
+Autor: Cristian
+#>
+
+# ===============================
+# CONFIGURACION
+# ===============================
+$BasePath = "D:\GestorDocumental"     # Cambia si tu disco de datos no es D:
+$LogPath  = "C:\Temp\IES_Aula.log"    # Log local (se crea si no existe)
+$PasswordPlain = "Camp2025!"          # Cambia la contrasena (luego documentas)
+$PasswordSecure = ConvertTo-SecureString $PasswordPlain -AsPlainText -Force
+
+$UsuariosESO   = @("1ESO","2ESO","3ESO","4ESO")
+$UsuariosBACH  = @("1BACH","2BACH")
+$UsuariosDAW   = @("1DAW")
+$UsuariosExtra = @("alumnado","profesorado")
+$AdminSistema  = "administrador"
+
+$Grupos = @("ESO","BACH","DAW","Alumnado","Profesorado")
+
+# ===============================
+# UTILIDADES
+# ===============================
+function Ensure-Admin {
+    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if (-not $isAdmin) {
+        Write-Host "ERROR: Ejecuta PowerShell como Administrador." -ForegroundColor Red
+        Pause
+        exit 1
+    }
+}
+
+function Write-Log {
+    param([string]$Message)
+    $dir = Split-Path $LogPath -Parent
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    Add-Content -Path $LogPath -Value "[$stamp] $Message"
+}
+
+function Safe-Run {
+    param(
+        [scriptblock]$Action,
+        [string]$OkMessage,
+        [string]$ErrMessage
+    )
+    try {
+        & $Action
+        if ($OkMessage) { Write-Host $OkMessage -ForegroundColor Green; Write-Log $OkMessage }
+    } catch {
+        $msg = "$ErrMessage :: $($_.Exception.Message)"
+        Write-Host $msg -ForegroundColor Red
+        Write-Log $msg
+    }
+}
+
+# ===============================
+# 1) USUARIOS Y GRUPOS
+# ===============================
+function Crear-Grupos {
+    foreach ($g in $Grupos) {
+        if (-not (Get-LocalGroup -Name $g -ErrorAction SilentlyContinue)) {
+            New-LocalGroup -Name $g -Description "Grupo $g del IES Camp de Morvedre"
+            Write-Host "Grupo creado: $g" -ForegroundColor Green
+            Write-Log "Grupo creado: $g"
+        } else {
+            Write-Host "Grupo ya existe: $g" -ForegroundColor Yellow
+            Write-Log "Grupo ya existe: $g"
+        }
+    }
+}
+
+function Crear-Usuario {
+    param(
+        [string]$Name,
+        [string]$Description,
+        [switch]$Admin
+    )
+
+    if (-not (Get-LocalUser -Name $Name -ErrorAction SilentlyContinue)) {
+        New-LocalUser `
+            -Name $Name `
+            -Password $PasswordSecure `
+            -FullName $Name `
+            -Description $Description `
+            -PasswordNeverExpires `
+            -UserMayNotChangePassword
+
+        Write-Host "Usuario creado: $Name" -ForegroundColor Green
+        Write-Log "Usuario creado: $Name"
+
+        if ($Admin) {
+            Add-LocalGroupMember -Group "Administrators" -Member $Name
+            Write-Host "Usuario $Name agregado a Administrators" -ForegroundColor Green
+            Write-Log "Usuario $Name agregado a Administrators"
+        }
+    } else {
+        Write-Host "Usuario ya existe: $Name" -ForegroundColor Yellow
+        Write-Log "Usuario ya existe: $Name"
+    }
+}
+
+function Asignar-Grupos {
+    # ESO
+    foreach ($u in $UsuariosESO) { 
+        if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
+            Add-LocalGroupMember -Group "ESO" -Member $u -ErrorAction SilentlyContinue
+        }
+    }
+    # BACH
+    foreach ($u in $UsuariosBACH) { 
+        if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
+            Add-LocalGroupMember -Group "BACH" -Member $u -ErrorAction SilentlyContinue
+        }
+    }
+    # DAW
+    foreach ($u in $UsuariosDAW) { 
+        if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
+            Add-LocalGroupMember -Group "DAW" -Member $u -ErrorAction SilentlyContinue
+        }
+    }
+    # Extra
+    if (Get-LocalUser -Name "alumnado" -ErrorAction SilentlyContinue) {
+        Add-LocalGroupMember -Group "Alumnado" -Member "alumnado" -ErrorAction SilentlyContinue
+    }
+    if (Get-LocalUser -Name "profesorado" -ErrorAction SilentlyContinue) {
+        Add-LocalGroupMember -Group "Profesorado" -Member "profesorado" -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "Usuarios agregados a grupos." -ForegroundColor Green
+    Write-Log "Usuarios agregados a grupos."
+}
+
+function Crear-Usuarios-Todos {
+    foreach ($u in $UsuariosESO)  { Crear-Usuario -Name $u -Description "Usuario del curso $u (ESO)" }
+    foreach ($u in $UsuariosBACH) { Crear-Usuario -Name $u -Description "Usuario del curso $u (BACH)" }
+
+    foreach ($u in $UsuariosDAW)  { Crear-Usuario -Name $u -Description "Usuario administrador DAW" -Admin }
+
+    foreach ($u in $UsuariosExtra){ Crear-Usuario -Name $u -Description "Usuario general $u" }
+
+    Crear-Usuario -Name $AdminSistema -Description "Cuenta administrativa del sistema" -Admin
+
+    Asignar-Grupos
+}
+
+function Aplicar-Horarios {
+    Safe-Run { net user 1ESO /time:M-F,08:00-09:00 }  "Horario aplicado: 1ESO"  "Error horario 1ESO"
+    Safe-Run { net user 2ESO /time:M-F,09:00-10:00 }  "Horario aplicado: 2ESO"  "Error horario 2ESO"
+    Safe-Run { net user 3ESO /time:M-F,10:00-11:00 }  "Horario aplicado: 3ESO"  "Error horario 3ESO"
+    Safe-Run { net user 4ESO /time:M-F,11:00-12:00 }  "Horario aplicado: 4ESO"  "Error horario 4ESO"
+    Safe-Run { net user 1BACH /time:M-F,12:00-13:00 } "Horario aplicado: 1BACH" "Error horario 1BACH"
+    Safe-Run { net user 2BACH /time:M-F,13:00-14:00 } "Horario aplicado: 2BACH" "Error horario 2BACH"
+    Safe-Run { net user 1DAW /time:M-F,08:00-14:00 }  "Horario aplicado: 1DAW"  "Error horario 1DAW"
+    Safe-Run { net user alumnado /time:M-F,08:00-21:00 } "Horario aplicado: alumnado" "Error horario alumnado"
+    Safe-Run { net user profesorado /time:M-F,08:00-21:00 } "Horario aplicado: profesorado" "Error horario profesorado"
+    Write-Host "Horarios configurados." -ForegroundColor Green
+    Write-Log "Horarios configurados."
+}
+
+function Ocultar-Lista-Usuarios {
+    $RegPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    Safe-Run { Set-ItemProperty -Path $RegPath -Name "DontDisplayLastUserName" -Value 1 } `
+        "Ocultacion de usuarios en login activada." `
+        "Error al configurar ocultacion de login"
+}
+
+# ===============================
+# 2) GESTOR DOCUMENTAL
+# ===============================
+function Crear-Estructura-Carpetas {
+    $paths = @(
+        "$BasePath\ESO\1ESO", "$BasePath\ESO\2ESO", "$BasePath\ESO\3ESO", "$BasePath\ESO\4ESO",
+        "$BasePath\BACH\1BACH", "$BasePath\BACH\2BACH",
+        "$BasePath\DAW\1DAW"
+    )
+    Safe-Run { New-Item -ItemType Directory -Path $paths -Force | Out-Null } `
+        "Estructura de carpetas creada en $BasePath" `
+        "Error creando estructura de carpetas"
+}
+
+function Set-Permisos-Base {
+    param([string]$Path)
+
+    Safe-Run { icacls $Path /inheritance:r | Out-Null } "Herencia deshabilitada en $Path" "Error deshabilitando herencia $Path"
+    Safe-Run { icacls $Path /remove:g "Users" "Authenticated Users" "Everyone" 2>$null | Out-Null } "" ""
+    Safe-Run { icacls $Path /grant "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null } `
+        "Permisos base (Admins/SYSTEM) aplicados en $Path" `
+        "Error aplicando permisos base $Path"
+}
+
+function Aplicar-Permisos {
+    if (-not (Test-Path $BasePath)) {
+        Write-Host "ERROR: No existe $BasePath. Crea la estructura primero." -ForegroundColor Red
+        return
+    }
+
+    foreach ($p in @("$BasePath\ESO", "$BasePath\BACH", "$BasePath\DAW")) {
+        if (Test-Path $p) { Set-Permisos-Base -Path $p }
+    }
+
+    # ESO
+    foreach ($curso in $UsuariosESO) {
+        $folder = "$BasePath\ESO\$curso"
+        if (Test-Path $folder) {
+            Set-Permisos-Base -Path $folder
+            Safe-Run { icacls $folder /grant "${curso}:(OI)(CI)M" "ESO:(OI)(CI)R" | Out-Null } `
+                "Permisos aplicados en $folder (M para $curso, R para ESO)" `
+                "Error aplicando permisos en $folder"
+        }
+    }
+
+    # BACH
+    foreach ($curso in $UsuariosBACH) {
+        $folder = "$BasePath\BACH\$curso"
+        if (Test-Path $folder) {
+            Set-Permisos-Base -Path $folder
+            Safe-Run { icacls $folder /grant "${curso}:(OI)(CI)M" "BACH:(OI)(CI)R" | Out-Null } `
+                "Permisos aplicados en $folder (M para $curso, R para BACH)" `
+                "Error aplicando permisos en $folder"
+        }
+    }
+
+    # DAW
+    $dawFolder = "$BasePath\DAW\1DAW"
+    if (Test-Path $dawFolder) {
+        Set-Permisos-Base -Path $dawFolder
+        Safe-Run { icacls $dawFolder /grant "1DAW:(OI)(CI)M" "DAW:(OI)(CI)R" | Out-Null } `
+            "Permisos aplicados en $dawFolder (M para 1DAW, R para DAW)" `
+            "Error aplicando permisos en $dawFolder"
+    }
+
+    Write-Host "Permisos NTFS configurados." -ForegroundColor Green
+    Write-Log "Permisos NTFS configurados."
+}
+
+# ===============================
+# 3) VALIDACION RAPIDA
+# ===============================
+function Validacion-Rapida {
+    Write-Host "=== VALIDACION RAPIDA ===" -ForegroundColor Cyan
+
+    $checkUsers = $UsuariosESO + $UsuariosBACH + $UsuariosDAW + $UsuariosExtra + @($AdminSistema)
+    foreach ($u in $checkUsers) {
+        $exists = Get-LocalUser -Name $u -ErrorAction SilentlyContinue
+        if ($exists) { Write-Host "OK usuario: $u" -ForegroundColor Green }
+        else { Write-Host "FALTA usuario: $u" -ForegroundColor Red }
+    }
+
+    $checkFolders = @(
+        "$BasePath\ESO\1ESO","$BasePath\ESO\2ESO","$BasePath\ESO\3ESO","$BasePath\ESO\4ESO",
+        "$BasePath\BACH\1BACH","$BasePath\BACH\2BACH",
+        "$BasePath\DAW\1DAW"
+    )
+    foreach ($f in $checkFolders) {
+        if (Test-Path $f) { Write-Host "OK carpeta: $f" -ForegroundColor Green }
+        else { Write-Host "FALTA carpeta: $f" -ForegroundColor Red }
+    }
+
+    Write-Host "Revision rapida finalizada." -ForegroundColor Cyan
+    Write-Log "Validacion rapida ejecutada."
+}
+
+# ===============================
+# 4) LIMPIEZA COMPLETA (RESET)
+# ===============================
+function Limpiar-Todo {
+    Write-Host "==========================================" -ForegroundColor Red
+    Write-Host "  LIMPIEZA COMPLETA DEL SISTEMA" -ForegroundColor Red
+    Write-Host "  ESTA ACCION BORRARA TODO LO CREADO" -ForegroundColor Red
+    Write-Host "==========================================" -ForegroundColor Red
+
+    $confirm = Read-Host "Escribe BORRAR para confirmar"
+    if ($confirm -ne "BORRAR") {
+        Write-Host "Operacion cancelada." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "Iniciando limpieza..." -ForegroundColor Cyan
+    Write-Log "Inicio limpieza completa"
+
+    # 1) Reset permisos y eliminar carpeta gestor
+    if (Test-Path $BasePath) {
+        try {
+            icacls $BasePath /reset /T /C | Out-Null
+            Remove-Item -Path $BasePath -Recurse -Force
+            Write-Host "Gestor documental eliminado." -ForegroundColor Green
+            Write-Log "Gestor documental eliminado"
+        } catch {
+            Write-Host "Error eliminando gestor documental: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Log "Error eliminando gestor documental"
+        }
+    } else {
+        Write-Host "No existe el gestor documental." -ForegroundColor Yellow
+        Write-Log "No existe el gestor documental"
+    }
+
+    # 2) Eliminar usuarios del proyecto
+    $UsuariosABorrar = $UsuariosESO + $UsuariosBACH + $UsuariosDAW + $UsuariosExtra + @($AdminSistema)
+    foreach ($u in $UsuariosABorrar) {
+        if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
+            try {
+                Remove-LocalUser -Name $u
+                Write-Host "Usuario eliminado: $u" -ForegroundColor Green
+                Write-Log "Usuario eliminado: $u"
+            } catch {
+                Write-Host "Error eliminando usuario $u: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Log "Error eliminando usuario $u"
+            }
+        }
+    }
+
+    # 3) Eliminar grupos del proyecto
+    foreach ($g in $Grupos) {
+        if (Get-LocalGroup -Name $g -ErrorAction SilentlyContinue) {
+            try {
+                Remove-LocalGroup -Name $g
+                Write-Host "Grupo eliminado: $g" -ForegroundColor Green
+                Write-Log "Grupo eliminado: $g"
+            } catch {
+                Write-Host "Error eliminando grupo $g: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Log "Error eliminando grupo $g"
+            }
+        }
+    }
+
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host " LIMPIEZA COMPLETADA" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Log "Limpieza completa finalizada"
+}
+
+# ===============================
+# MENU
+# ===============================
+function Show-Menu {
+    Clear-Host
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host " IES Camp de Morvedre - Proyecto Aula (Win)" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "1) Crear grupos"
+    Write-Host "2) Crear usuarios + asignar grupos"
+    Write-Host "3) Aplicar horarios"
+    Write-Host "4) Ocultar lista de usuarios en login"
+    Write-Host "5) Crear estructura gestor documental"
+    Write-Host "6) Aplicar permisos NTFS (icacls)"
+    Write-Host "7) Validacion rapida"
+    Write-Host "8) Ejecutar TODO (1-6)"
+    Write-Host "9) LIMPIEZA COMPLETA (reset del sistema)"
+    Write-Host "0) Salir"
+    Write-Host ""
+}
+
+function Ejecutar-Todo {
+    Crear-Grupos
+    Crear-Usuarios-Todos
+    Aplicar-Horarios
+    Ocultar-Lista-Usuarios
+    Crear-Estructura-Carpetas
+    Aplicar-Permisos
+}
+
+# ===============================
+# MAIN
+# ===============================
+Ensure-Admin
+
+do {
+    Show-Menu
+    $op = Read-Host "Selecciona una opcion"
+
+    switch ($op) {
+        "1" { Crear-Grupos; Pause }
+        "2" { Crear-Usuarios-Todos; Pause }
+        "3" { Aplicar-Horarios; Pause }
+        "4" { Ocultar-Lista-Usuarios; Pause }
+        "5" { Crear-Estructura-Carpetas; Pause }
+        "6" { Aplicar-Permisos; Pause }
+        "7" { Validacion-Rapida; Pause }
+        "8" { Ejecutar-Todo; Pause }
+        "9" { Limpiar-Todo; Pause }
+        "0" { Write-Host "Saliendo..." -ForegroundColor Yellow; Write-Log "Script finalizado"; }
+        default { Write-Host "Opcion no valida." -ForegroundColor Red; Pause }
+    }
+} while ($op -ne "0")
